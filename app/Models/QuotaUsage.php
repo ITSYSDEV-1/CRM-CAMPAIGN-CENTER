@@ -20,12 +20,18 @@ class QuotaUsage extends Model
         'daily_used',
         'monthly_used',
         'mandatory_used',
-        'breakdown'
+        'breakdown',
+        'sync_type',
+        'last_sync_at',
+        'discrepancy_status',
+        'discrepancy_details'
     ];
 
     protected $casts = [
         'usage_date' => 'date',
-        'breakdown' => 'array'
+        'breakdown' => 'array',
+        'last_sync_at' => 'datetime',
+        'discrepancy_details' => 'array'
     ];
 
     public function pepipostAccount(): BelongsTo
