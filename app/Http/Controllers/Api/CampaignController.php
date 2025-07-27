@@ -214,7 +214,7 @@ class CampaignController extends Controller
             ], 422);
         }
 
-        $crmUnit = CrmUnit::where('app_code', $request->app_code)->first();
+        $crmUnit = \App\Models\CrmUnit::where('app_code', $request->app_code)->first();
         
         $query = $crmUnit->campaigns()->with(['pepipostAccount'])
             ->orderBy('scheduled_date', 'desc');

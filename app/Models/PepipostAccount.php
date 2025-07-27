@@ -5,7 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-
+use Carbon\Carbon;
+use App\Services\BillingCycleService;
 class PepipostAccount extends Model
 {
     use HasFactory;
@@ -26,7 +27,7 @@ class PepipostAccount extends Model
 
     public function crmUnits(): HasMany
     {
-        return $this->hasMany(CrmUnit::class);
+        return $this->hasMany(\App\Models\CrmUnit::class);
     }
 
     public function campaigns(): HasMany
@@ -44,9 +45,10 @@ class PepipostAccount extends Model
     {
         $date = $date ?? now()->format('Y-m-d');
         
-        $totalUsed = $this->quotaUsage()
-            ->where('usage_date', $date)
-            ->sum('daily_used');
+        // PERBAIKAN: Jangan gunakan quota usage dari unit
+        // $totalUsed = $this->quotaUsage()
+        //     ->where('usage_date', $date)
+        //     ->sum('daily_used');
             
         // Hitung kuota yang sudah direservasi oleh kampanye aktif (tidak termasuk cancelled)
         $reservedQuota = $this->campaigns()
@@ -58,36 +60,29 @@ class PepipostAccount extends Model
             ->where('is_active', true)
             ->sum('mandatory_daily_quota');
             
-        return $this->daily_quota - $totalUsed - $reservedQuota - $mandatoryQuota;
+        // PERBAIKAN: Hanya kurangi reservasi dan mandatory, bukan quota usage
+        return $this->daily_quota - $reservedQuota - $mandatoryQuota;
     }
-    
-    public function getReservedDailyQuota($date = null)
+
+    public function getAvailableMonthlyQuota($date = null)
     {
-        $date = $date ?? now()->format('Y-m-d');
+        $billingPeriod = BillingCycleService::getBillingPeriod($date);
         
-        return $this->campaigns()
-            ->where('scheduled_date', $date)
-            ->active() // Gunakan scope active yang sudah ada
-            ->sum('email_count');
-    }
-    
-    public function getAvailableMonthlyQuota($month = null, $year = null)
-    {
-        $month = $month ?? now()->month;
-        $year = $year ?? now()->year;
-        
-        $totalUsed = $this->quotaUsage()
-            ->whereMonth('usage_date', $month)
-            ->whereYear('usage_date', $year)
-            ->sum('monthly_used');
-            
         // Hitung kuota yang sudah direservasi oleh kampanye aktif
         $reservedQuota = $this->campaigns()
-            ->whereMonth('scheduled_date', $month)
-            ->whereYear('scheduled_date', $year)
-            ->active() // Gunakan scope active yang sudah ada
+            ->whereBetween('scheduled_date', [$billingPeriod['start_date'], $billingPeriod['end_date']])
+            ->active()
             ->sum('email_count');
+        
+        // Hitung mandatory quota untuk periode billing
+        $startDate = Carbon::parse($billingPeriod['start_date']);
+        $endDate = Carbon::parse($billingPeriod['end_date']);
+        $daysInPeriod = $startDate->diffInDays($endDate) + 1;
+        
+        $mandatoryMonthlyQuota = $this->crmUnits()
+            ->where('is_active', true)
+            ->sum('mandatory_daily_quota') * $daysInPeriod;
             
-        return $this->monthly_quota - $totalUsed - $reservedQuota;
+        return $this->monthly_quota - $reservedQuota - $mandatoryMonthlyQuota;
     }
 }

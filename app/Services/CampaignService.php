@@ -34,7 +34,8 @@ class CampaignService
             'daily_quota' => $pepipostAccount->daily_quota,
             'monthly_quota' => $pepipostAccount->monthly_quota,
             'available_daily' => $pepipostAccount->getAvailableDailyQuota($date),
-            'available_monthly' => $pepipostAccount->getAvailableMonthlyQuota(
+            // ✅ PERBAIKAN: Gunakan tanggal untuk billing period
+            'available_monthly' => $pepipostAccount->getAvailableMonthlyQuota($date,
                 Carbon::parse($date)->month,
                 Carbon::parse($date)->year
             )

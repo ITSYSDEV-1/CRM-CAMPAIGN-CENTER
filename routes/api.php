@@ -28,6 +28,9 @@ Route::middleware('verify.api.token')->group(function () {
         Route::get('/status', [CampaignController::class, 'quotaStatus']);
     });
     
+    // Campaign Completion - NEW ENDPOINT
+    Route::post('/campaign/complete', [QuotaSyncController::class, 'markCampaignComplete']);
+    
     // Sync Management
     Route::post('/sync', [CampaignController::class, 'sync']);
     
@@ -35,7 +38,9 @@ Route::middleware('verify.api.token')->group(function () {
     Route::get('/campaigns/history', [CampaignController::class, 'history']);
     
     Route::post('/quota/sync', [QuotaSyncController::class, 'syncQuotaFromUnit']);
+    Route::get('/quota/group-info', [QuotaSyncController::class, 'getGroupQuotaInfo']);
     Route::get('/quota/discrepancy', [QuotaSyncController::class, 'getDiscrepancyReport']);
+    Route::get('/quota/discrepancy/summary', [QuotaSyncController::class, 'getDiscrepancySummary']);
 
     // Admin endpoints (optional, untuk management)
     Route::prefix('admin')->group(function () {

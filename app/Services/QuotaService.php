@@ -6,12 +6,13 @@ use App\Models\CrmUnit;
 use App\Models\QuotaUsage;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use App\Services\BillingCycleService;
 
 class QuotaService
 {
     public function getQuotaStatus($appCode, $date)
     {
-        $crmUnit = CrmUnit::with('pepipostAccount')->where('app_code', $appCode)->first();
+        $crmUnit = \App\Models\CrmUnit::with('pepipostAccount')->where('app_code', $appCode)->first();
         
         if (!$crmUnit) {
             throw new \Exception('CRM Unit not found');
@@ -20,11 +21,8 @@ class QuotaService
         $pepipostAccount = $crmUnit->pepipostAccount;
         $carbonDate = Carbon::parse($date);
         
-        // Kuota harian
-        $dailyData = $this->getDailyQuotaData($pepipostAccount, $crmUnit, $date);
-        
-        // Kuota bulanan
-        $monthlyData = $this->getMonthlyQuotaData($pepipostAccount, $crmUnit, $carbonDate->month, $carbonDate->year);
+        // ✅ PERBAIKAN: Gunakan tanggal untuk billing period
+        $monthlyData = $this->getMonthlyQuotaData($pepipostAccount, $crmUnit, $date);
         
         // Proyeksi penggunaan
         $projection = $this->getUsageProjection($pepipostAccount, $carbonDate);
@@ -86,7 +84,7 @@ class QuotaService
             ->where('usage_date', $date)
             ->sum('daily_used');
             
-        $mandatoryTotal = CrmUnit::where('pepipost_account_id', $pepipostAccount->id)
+        $mandatoryTotal = \App\Models\CrmUnit::where('pepipost_account_id', $pepipostAccount->id)
             ->where('is_active', true)
             ->sum('mandatory_daily_quota');
 
@@ -103,20 +101,21 @@ class QuotaService
         ];
     }
 
-    private function getMonthlyQuotaData($pepipostAccount, $crmUnit, $month, $year)
+    private function getMonthlyQuotaData($pepipostAccount, $crmUnit, $date = null)
     {
+        $billingPeriod = BillingCycleService::getBillingPeriod($date);
+        
         $totalUsed = QuotaUsage::where('pepipost_account_id', $pepipostAccount->id)
-            ->whereMonth('usage_date', $month)
-            ->whereYear('usage_date', $year)
+            ->whereBetween('usage_date', [$billingPeriod['start_date'], $billingPeriod['end_date']])
             ->sum('monthly_used');
             
         $unitUsed = QuotaUsage::where('pepipost_account_id', $pepipostAccount->id)
             ->where('crm_unit_id', $crmUnit->id)
-            ->whereMonth('usage_date', $month)
-            ->whereYear('usage_date', $year)
+            ->whereBetween('usage_date', [$billingPeriod['start_date'], $billingPeriod['end_date']])
             ->sum('monthly_used');
-
+    
         return [
+            'billing_period' => $billingPeriod,
             'group_quota' => $pepipostAccount->monthly_quota,
             'group_used' => $totalUsed,
             'group_available' => $pepipostAccount->monthly_quota - $totalUsed,
@@ -134,9 +133,10 @@ class QuotaService
         $dayOfMonth = $date->day;
         $remainingDays = $daysInMonth - $dayOfMonth + 1;
         
+        // ✅ PERBAIKAN: Gunakan billing period
+        $billingPeriod = BillingCycleService::getBillingPeriod($date);
         $monthlyUsed = QuotaUsage::where('pepipost_account_id', $pepipostAccount->id)
-            ->whereMonth('usage_date', $date->month)
-            ->whereYear('usage_date', $date->year)
+            ->whereBetween('usage_date', [$billingPeriod['start_date'], $billingPeriod['end_date']])
             ->sum('monthly_used');
             
         $averageDailyUsage = $dayOfMonth > 1 ? $monthlyUsed / ($dayOfMonth - 1) : 0;
