@@ -129,21 +129,21 @@ class CampaignService
         // Validasi kuota dengan reservasi yang sudah ada
         $quotaCheck = $this->validateQuotaWithReservation($crmUnit, $date, $emailCount);
         
-        // PERBAIKAN: Handle auto-booking ketika tidak ada quota
+        // PERBAIKAN: Handle auto-booking ketika group quota 0
         if ($quotaCheck['valid'] === 'auto_book') {
             return $this->handleAutoBookingOnly($crmUnit, $pepipostAccount, $data, $date, $emailCount);
         }
         
-        // HAPUS bagian ini yang menolak campaign:
-        // if ($quotaCheck['valid'] === false) {
-        //     $suggestions = $this->getSequentialDateSuggestions($pepipostAccount, $date, $emailCount, $crmUnit);
-        //     
-        //     return [
-        //         'success' => false,
-        //         'message' => $quotaCheck['message'],
-        //         'suggestions' => $suggestions
-        //     ];
-        // }
+        if ($quotaCheck['valid'] === false) {
+            // Berikan saran tanggal berurutan
+            $suggestions = $this->getSequentialDateSuggestions($pepipostAccount, $date, $emailCount);
+            
+            return [
+                'success' => false,
+                'message' => $quotaCheck['message'],
+                'suggestions' => $suggestions
+            ];
+        }
         
         // Handle partial approval dengan auto-booking
         if ($quotaCheck['valid'] === 'partial') {
@@ -222,7 +222,7 @@ class CampaignService
         for ($i = 0; $i < 14 && $remainingToBook > 0; $i++) {
             $checkDate = $startDate->copy()->addDays($i)->format('Y-m-d');
             
-            // PERBAIKAN: Gunakan QuotaManager untuk konsistensi
+            // PERBAIKAN: Gunakan QuotaManager untuk mendapatkan quota yang sesuai dengan mode
             if ($this->quotaManager->isEqualQuotaEnabled()) {
                 $availableQuota = $this->quotaManager->getAvailableQuota($crmUnit, $checkDate);
             } else {
@@ -285,7 +285,7 @@ class CampaignService
     }
 
     // Method baru untuk saran tanggal berurutan
-    private function getSequentialDateSuggestions($pepipostAccount, $currentDate, $emailCount, $crmUnit = null)
+    private function getSequentialDateSuggestions($pepipostAccount, $currentDate, $emailCount)
     {
         $alternatives = [];
         $startDate = Carbon::parse($currentDate)->addDay();
@@ -293,13 +293,7 @@ class CampaignService
         // Cari tanggal berurutan yang tersedia
         for ($i = 0; $i < 14; $i++) {
             $checkDate = $startDate->copy()->addDays($i)->format('Y-m-d');
-            
-            // PERBAIKAN: Gunakan QuotaManager untuk konsistensi dengan overview
-            if ($crmUnit && $this->quotaManager->isEqualQuotaEnabled()) {
-                $available = $this->quotaManager->getAvailableQuota($crmUnit, $checkDate);
-            } else {
-                $available = $pepipostAccount->getAvailableDailyQuota($checkDate);
-            }
+            $available = $pepipostAccount->getAvailableDailyQuota($checkDate);
             
             if ($available > 0) {
                 $alternatives[] = [
@@ -561,7 +555,7 @@ class CampaignService
     /**
      * Get schedule overview for date range
      */
-    public function getScheduleOverviewRange($appCode, $startDate, $endDate)
+    public function getScheduleOverviewRange($appCode, $startDate, $endDate, $includeHistorical = false)
     {
         $crmUnit = CrmUnit::with('pepipostAccount')->where('app_code', $appCode)->first();
         
@@ -582,12 +576,19 @@ class CampaignService
         // Generate data untuk setiap tanggal dalam range
         while ($current <= $end) {
             $date = $current->format('Y-m-d');
+            $isHistorical = $current->isPast();
             
-            // Get scheduled campaigns for this date
-            $scheduledCampaigns = Campaign::with('crmUnit')
+            // Get campaigns for this date (termasuk yang sudah sent jika historical)
+            $campaigns = Campaign::with('crmUnit')
                 ->where('pepipost_account_id', $pepipostAccount->id)
                 ->where('scheduled_date', $date)
-                ->whereIn('status', ['pending', 'approved'])
+                ->when($includeHistorical && $isHistorical, function($query) {
+                    // Untuk tanggal masa lalu, tampilkan semua status termasuk 'sent'
+                    return $query->whereIn('status', ['pending', 'approved', 'sent', 'cancelled']);
+                }, function($query) {
+                    // Untuk tanggal masa depan, hanya pending dan approved
+                    return $query->whereIn('status', ['pending', 'approved']);
+                })
                 ->get()
                 ->map(function ($campaign) {
                     return [
@@ -596,17 +597,20 @@ class CampaignService
                         'email_count' => $campaign->email_count,
                         'status' => $campaign->status,
                         'type' => $campaign->campaign_type,
-                        'subject' => $campaign->subject
+                        'subject' => $campaign->subject,
+                        'sent_at' => $campaign->sent_at?->format('Y-m-d H:i:s'),
+                        'actual_emails_sent' => $campaign->metadata['actual_emails_sent'] ?? null
                     ];
                 });
 
             $availableQuota = $pepipostAccount->getAvailableDailyQuota($date);
-            $totalScheduled = $scheduledCampaigns->sum('email_count');
+            $totalScheduled = $campaigns->sum('email_count');
             
             $dateRange[] = [
                 'date' => $date,
                 'day_name' => $current->format('l'),
                 'day_short' => $current->format('D'),
+                'is_historical' => $isHistorical,
                 'quota_info' => [
                     'daily_quota' => $pepipostAccount->daily_quota,
                     'available_quota' => $availableQuota,
@@ -616,9 +620,16 @@ class CampaignService
                         ? round((($pepipostAccount->daily_quota - $availableQuota) / $pepipostAccount->daily_quota) * 100, 2) 
                         : 0
                 ],
-                'scheduled_campaigns' => $scheduledCampaigns,
-                'can_book' => $availableQuota > 0,
-                'status' => $this->getDateStatus($availableQuota, $pepipostAccount->daily_quota)
+                'campaigns' => $campaigns,
+                'campaign_summary' => [
+                    'total_campaigns' => $campaigns->count(),
+                    'sent_campaigns' => $campaigns->where('status', 'sent')->count(),
+                    'pending_campaigns' => $campaigns->where('status', 'pending')->count(),
+                    'approved_campaigns' => $campaigns->where('status', 'approved')->count(),
+                    'total_emails_sent' => $campaigns->where('status', 'sent')->sum('email_count')
+                ],
+                'can_book' => !$isHistorical && $availableQuota > 0,
+                'status' => $isHistorical ? 'historical' : $this->getDateStatus($availableQuota, $pepipostAccount->daily_quota)
             ];
             
             $current->addDay();

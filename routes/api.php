@@ -19,6 +19,7 @@ Route::middleware('verify.api.token')->group(function () {
     Route::prefix('schedule')->group(function () {
         Route::get('/overview', [CampaignController::class, 'overview']);
         Route::get('/overview/range', [CampaignController::class, 'overviewRange']); 
+        Route::get('/calendar/{year}/{month}', [CampaignController::class, 'calendarView']);
         Route::post('/request', [CampaignController::class, 'requestCampaign']);
         Route::delete('/cancel/{campaignId}', [CampaignController::class, 'cancelCampaign']);
     });
