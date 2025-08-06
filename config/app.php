@@ -123,4 +123,12 @@ return [
         'store' => env('APP_MAINTENANCE_STORE', 'database'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Equal Quota Configuration
+    |--------------------------------------------------------------------------
+    */
+    'enable_equal_quota' => env('ENABLE_EQUAL_QUOTA', false),
+    'equal_quota_buffer_percentage' => env('EQUAL_QUOTA_BUFFER_PERCENTAGE', 10),
+
 ];

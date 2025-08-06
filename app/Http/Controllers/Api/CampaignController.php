@@ -8,6 +8,7 @@ use App\Models\Campaign;
 use App\Models\PepipostAccount;
 use App\Services\CampaignService;
 use App\Services\QuotaService;
+use App\Services\QuotaManager;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Validator;
@@ -17,11 +18,13 @@ class CampaignController extends Controller
 {
     protected $campaignService;
     protected $quotaService;
+    protected $quotaManager;
 
-    public function __construct(CampaignService $campaignService, QuotaService $quotaService)
+    public function __construct(CampaignService $campaignService, QuotaService $quotaService, QuotaManager $quotaManager)
     {
         $this->campaignService = $campaignService;
         $this->quotaService = $quotaService;
+        $this->quotaManager = $quotaManager;
     }
 
     /**
@@ -48,6 +51,14 @@ class CampaignController extends Controller
 
         // Langsung ambil data tanpa cache
         $data = $this->campaignService->getScheduleOverview($appCode, $date);
+        
+        // Tambahkan informasi mode quota
+        $data['system_info'] = [
+            'quota_mode' => $this->quotaManager->isEqualQuotaEnabled() ? 'equal_quota' : 'group_quota',
+            'quota_mode_description' => $this->quotaManager->isEqualQuotaEnabled() 
+                ? 'Equal quota distribution among units'
+                : 'First request wins from group quota'
+        ];
 
         return response()->json([
             'success' => true,
