@@ -12,10 +12,12 @@ use Illuminate\Support\Facades\DB;
 class CampaignService
 {
     protected $quotaService;
+    protected $quotaManager;
 
-    public function __construct(QuotaService $quotaService)
+    public function __construct(QuotaService $quotaService, QuotaManager $quotaManager)
     {
         $this->quotaService = $quotaService;
+        $this->quotaManager = $quotaManager;
     }
 
     public function getScheduleOverview($appCode, $date)
@@ -28,28 +30,9 @@ class CampaignService
 
         $pepipostAccount = $crmUnit->pepipostAccount;
         
-        // Data kuota grup (akun Pepipost)
-        $groupQuota = [
-            'account_name' => $pepipostAccount->name,
-            'daily_quota' => $pepipostAccount->daily_quota,
-            'monthly_quota' => $pepipostAccount->monthly_quota,
-            'available_daily' => $pepipostAccount->getAvailableDailyQuota($date),
-            // ✅ PERBAIKAN: Gunakan tanggal untuk billing period
-            'available_monthly' => $pepipostAccount->getAvailableMonthlyQuota($date,
-                Carbon::parse($date)->month,
-                Carbon::parse($date)->year
-            )
-        ];
-
-        // Data kuota unit (HANYA UNTUK DISPLAY, TIDAK UNTUK VALIDASI)
-        $unitQuota = [
-            'unit_name' => $crmUnit->name,
-            'daily_quota' => $crmUnit->daily_quota,
-            'monthly_quota' => $crmUnit->monthly_quota,
-            'mandatory_daily' => $crmUnit->mandatory_daily_quota,
-            'available_daily' => 'unlimited' // Atau bisa tampilkan group quota
-        ];
-
+        // Gunakan QuotaManager untuk mendapatkan data overview
+        $quotaData = $this->quotaManager->getOverviewData($crmUnit, $date);
+        
         // Kampanye yang sudah dijadwalkan untuk tanggal tersebut
         $scheduledCampaigns = Campaign::with('crmUnit')
             ->where('pepipost_account_id', $pepipostAccount->id)
@@ -72,22 +55,33 @@ class CampaignService
             ->where('is_active', true)
             ->get(['app_code', 'name', 'daily_quota', 'mandatory_daily_quota']);
 
-        // Saran tanggal alternatif jika kuota penuh
-        $alternativeDates = $this->getAlternativeDates($pepipostAccount, $date);
+        // Saran tanggal alternatif
+        $alternativeDates = $this->getAlternativeDates($pepipostAccount, $date, 1, $crmUnit);
 
-        return [
+        return array_merge($quotaData, [
             'date' => $date,
-            'group_quota' => $groupQuota,
-            'unit_quota' => $unitQuota,
             'scheduled_campaigns' => $scheduledCampaigns,
             'group_units' => $groupUnits,
             'alternative_dates' => $alternativeDates,
-            'can_book' => $this->canBookCampaign($crmUnit, $date),
+            'can_book' => $this->quotaManager->canBookCampaign($crmUnit, $date),
+            'quota_mode' => $this->quotaManager->isEqualQuotaEnabled() ? 'equal' : 'group',
             'sync_status' => [
                 'can_sync_today' => $crmUnit->canSyncToday(),
                 'sync_count_today' => $this->getTodaySyncCount($crmUnit)
             ]
-        ];
+        ]);
+    }
+
+    // Method validateQuotaWithReservation diganti dengan QuotaManager
+    private function validateQuotaWithReservation($crmUnit, $date, $emailCount)
+    {
+        return $this->quotaManager->validateCampaignRequest($crmUnit, $date, $emailCount);
+    }
+
+    // Method canBookCampaign diganti dengan QuotaManager
+    private function canBookCampaign($crmUnit, $date)
+    {
+        return $this->quotaManager->canBookCampaign($crmUnit, $date);
     }
 
     public function requestCampaign($data)
@@ -194,36 +188,6 @@ class CampaignService
         ];
     }
 
-    // Method baru untuk validasi kuota dengan perhitungan reservasi
-    private function validateQuotaWithReservation($crmUnit, $date, $emailCount)
-    {
-        $pepipostAccount = $crmUnit->pepipostAccount;
-        
-        // HANYA gunakan group quota - HAPUS unit quota validation
-        $availableGroupQuota = $pepipostAccount->getAvailableDailyQuota($date);
-        
-        // Jika tidak ada group quota sama sekali - LANGSUNG AUTO-BOOK
-        if ($availableGroupQuota <= 0) {
-            return [
-                'valid' => 'auto_book',
-                'message' => 'No group quota available - proceeding with auto-booking'
-            ];
-        }
-        
-        // Jika request melebihi group quota yang tersedia
-        if ($emailCount > $availableGroupQuota) {
-            return [
-                'valid' => 'partial',
-                'approved_count' => $availableGroupQuota,
-                'remaining_count' => $emailCount - $availableGroupQuota,
-                'message' => "Partial approval: {$availableGroupQuota} emails can be reserved for {$date} (group quota limit)"
-            ];
-        }
-        
-        // Jika group quota mencukupi - FULL APPROVAL
-        return ['valid' => true];
-    }
-
     // Method untuk auto-booking sequential dates pada partial approval
     private function handlePartialApprovalWithAutoBooking($crmUnit, $pepipostAccount, $data, $quotaCheck, $date, $emailCount)
     {
@@ -257,7 +221,13 @@ class CampaignService
         
         for ($i = 0; $i < 14 && $remainingToBook > 0; $i++) {
             $checkDate = $startDate->copy()->addDays($i)->format('Y-m-d');
-            $availableQuota = $pepipostAccount->getAvailableDailyQuota($checkDate);
+            
+            // PERBAIKAN: Gunakan QuotaManager untuk mendapatkan quota yang sesuai dengan mode
+            if ($this->quotaManager->isEqualQuotaEnabled()) {
+                $availableQuota = $this->quotaManager->getAvailableQuota($crmUnit, $checkDate);
+            } else {
+                $availableQuota = $pepipostAccount->getAvailableDailyQuota($checkDate);
+            }
             
             if ($availableQuota > 0) {
                 $bookingCount = min($remainingToBook, $availableQuota);
@@ -401,14 +371,22 @@ class CampaignService
         }
     }
 
-    private function getAlternativeDates($pepipostAccount, $currentDate, $emailCount = 1)
+    private function getAlternativeDates($pepipostAccount, $currentDate, $emailCount = 1, $crmUnit = null)
     {
         $alternatives = [];
         $startDate = Carbon::parse($currentDate)->addDay();
         
         for ($i = 0; $i < 14; $i++) {
             $checkDate = $startDate->copy()->addDays($i)->format('Y-m-d');
-            $available = $pepipostAccount->getAvailableDailyQuota($checkDate);
+            
+            // PERBAIKAN: Gunakan QuotaManager untuk mendapatkan quota yang sesuai dengan mode
+            if ($crmUnit && $this->quotaManager->isEqualQuotaEnabled()) {
+                // Jika equal quota mode, gunakan quota per unit
+                $available = $this->quotaManager->getAvailableQuota($crmUnit, $checkDate);
+            } else {
+                // Jika group quota mode, gunakan group quota
+                $available = $pepipostAccount->getAvailableDailyQuota($checkDate);
+            }
             
             // Tampilkan semua tanggal yang memiliki kuota tersedia (> 0)
             if ($available > 0) {
@@ -423,13 +401,6 @@ class CampaignService
         }
         
         return $alternatives;
-    }
-
-    private function canBookCampaign($crmUnit, $date)
-    {
-        // Hanya cek group quota, bukan unit quota
-        $availableGroupQuota = $crmUnit->pepipostAccount->getAvailableDailyQuota($date);
-        return $availableGroupQuota > 0;
     }
 
     private function prepareSyncData($crmUnit)
@@ -468,7 +439,13 @@ class CampaignService
         
         for ($i = 0; $i < 14 && $remainingToBook > 0; $i++) {
             $checkDate = $startDate->copy()->addDays($i)->format('Y-m-d');
-            $availableQuota = $pepipostAccount->getAvailableDailyQuota($checkDate);
+            
+            // PERBAIKAN: Gunakan QuotaManager untuk mendapatkan quota yang sesuai dengan mode
+            if ($this->quotaManager->isEqualQuotaEnabled()) {
+                $availableQuota = $this->quotaManager->getAvailableQuota($crmUnit, $checkDate);
+            } else {
+                $availableQuota = $pepipostAccount->getAvailableDailyQuota($checkDate);
+            }
             
             if ($availableQuota > 0) {
                 $bookingCount = min($remainingToBook, $availableQuota);
