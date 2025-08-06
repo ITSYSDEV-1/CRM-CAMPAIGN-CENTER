@@ -129,21 +129,21 @@ class CampaignService
         // Validasi kuota dengan reservasi yang sudah ada
         $quotaCheck = $this->validateQuotaWithReservation($crmUnit, $date, $emailCount);
         
-        // PERBAIKAN: Handle auto-booking ketika group quota 0
+        // PERBAIKAN: Handle auto-booking ketika tidak ada quota
         if ($quotaCheck['valid'] === 'auto_book') {
             return $this->handleAutoBookingOnly($crmUnit, $pepipostAccount, $data, $date, $emailCount);
         }
         
-        if ($quotaCheck['valid'] === false) {
-            // Berikan saran tanggal berurutan
-            $suggestions = $this->getSequentialDateSuggestions($pepipostAccount, $date, $emailCount);
-            
-            return [
-                'success' => false,
-                'message' => $quotaCheck['message'],
-                'suggestions' => $suggestions
-            ];
-        }
+        // HAPUS bagian ini yang menolak campaign:
+        // if ($quotaCheck['valid'] === false) {
+        //     $suggestions = $this->getSequentialDateSuggestions($pepipostAccount, $date, $emailCount, $crmUnit);
+        //     
+        //     return [
+        //         'success' => false,
+        //         'message' => $quotaCheck['message'],
+        //         'suggestions' => $suggestions
+        //     ];
+        // }
         
         // Handle partial approval dengan auto-booking
         if ($quotaCheck['valid'] === 'partial') {
@@ -222,7 +222,7 @@ class CampaignService
         for ($i = 0; $i < 14 && $remainingToBook > 0; $i++) {
             $checkDate = $startDate->copy()->addDays($i)->format('Y-m-d');
             
-            // PERBAIKAN: Gunakan QuotaManager untuk mendapatkan quota yang sesuai dengan mode
+            // PERBAIKAN: Gunakan QuotaManager untuk konsistensi
             if ($this->quotaManager->isEqualQuotaEnabled()) {
                 $availableQuota = $this->quotaManager->getAvailableQuota($crmUnit, $checkDate);
             } else {
@@ -285,7 +285,7 @@ class CampaignService
     }
 
     // Method baru untuk saran tanggal berurutan
-    private function getSequentialDateSuggestions($pepipostAccount, $currentDate, $emailCount)
+    private function getSequentialDateSuggestions($pepipostAccount, $currentDate, $emailCount, $crmUnit = null)
     {
         $alternatives = [];
         $startDate = Carbon::parse($currentDate)->addDay();
@@ -293,7 +293,13 @@ class CampaignService
         // Cari tanggal berurutan yang tersedia
         for ($i = 0; $i < 14; $i++) {
             $checkDate = $startDate->copy()->addDays($i)->format('Y-m-d');
-            $available = $pepipostAccount->getAvailableDailyQuota($checkDate);
+            
+            // PERBAIKAN: Gunakan QuotaManager untuk konsistensi dengan overview
+            if ($crmUnit && $this->quotaManager->isEqualQuotaEnabled()) {
+                $available = $this->quotaManager->getAvailableQuota($crmUnit, $checkDate);
+            } else {
+                $available = $pepipostAccount->getAvailableDailyQuota($checkDate);
+            }
             
             if ($available > 0) {
                 $alternatives[] = [

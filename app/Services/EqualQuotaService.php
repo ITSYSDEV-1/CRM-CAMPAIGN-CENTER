@@ -59,6 +59,7 @@ class EqualQuotaService
     
     /**
      * Validasi request campaign dengan equal quota
+     * FIXED: Selalu approve dengan auto-booking jika tidak ada quota
      */
     public function validateCampaignRequest($crmUnit, $date, $emailCount)
     {
@@ -80,9 +81,13 @@ class EqualQuotaService
             ];
         }
         
+        // FIXED: Jika tidak ada quota sama sekali, lakukan auto-booking
+        // Bukan menolak campaign
         return [
-            'valid' => false,
-            'message' => 'No quota available for this unit on the requested date',
+            'valid' => 'auto_book',
+            'approved_count' => 0,
+            'remaining_count' => $emailCount,
+            'message' => "No quota available for {$date}. Campaign will be auto-booked to alternative dates",
             'available_quota' => 0
         ];
     }
