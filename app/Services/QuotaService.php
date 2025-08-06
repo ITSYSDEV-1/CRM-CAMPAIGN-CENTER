@@ -10,6 +10,13 @@ use App\Services\BillingCycleService;
 
 class QuotaService
 {
+    protected $quotaManager;
+    
+    public function __construct(QuotaManager $quotaManager)
+    {
+        $this->quotaManager = $quotaManager;
+    }
+    
     public function getQuotaStatus($appCode, $date)
     {
         $crmUnit = \App\Models\CrmUnit::with('pepipostAccount')->where('app_code', $appCode)->first();
@@ -21,18 +28,19 @@ class QuotaService
         $pepipostAccount = $crmUnit->pepipostAccount;
         $carbonDate = Carbon::parse($date);
         
-        // ✅ PERBAIKAN: Gunakan tanggal untuk billing period
-        $monthlyData = $this->getMonthlyQuotaData($pepipostAccount, $crmUnit, $date);
+        // Gunakan QuotaManager untuk mendapatkan data yang konsisten
+        $quotaData = $this->quotaManager->getOverviewData($crmUnit, $date);
         
-        // Proyeksi penggunaan
+        $monthlyData = $this->getMonthlyQuotaData($pepipostAccount, $crmUnit, $date);
         $projection = $this->getUsageProjection($pepipostAccount, $carbonDate);
         
         return [
             'date' => $date,
-            'daily' => $dailyData,
+            'quota_mode' => $this->quotaManager->isEqualQuotaEnabled() ? 'equal_quota' : 'group_quota',
+            'daily' => $quotaData,
             'monthly' => $monthlyData,
             'projection' => $projection,
-            'recommendations' => $this->getRecommendations($dailyData, $monthlyData)
+            'recommendations' => $this->getRecommendations($quotaData, $monthlyData)
         ];
     }
 

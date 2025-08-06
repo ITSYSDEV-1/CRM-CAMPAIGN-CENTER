@@ -8,20 +8,24 @@ use App\Models\Campaign;
 use App\Models\PepipostAccount;
 use App\Services\CampaignService;
 use App\Services\QuotaService;
+use App\Services\QuotaManager;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Cache;
+use Carbon\Carbon;
 
 class CampaignController extends Controller
 {
     protected $campaignService;
     protected $quotaService;
+    protected $quotaManager;
 
-    public function __construct(CampaignService $campaignService, QuotaService $quotaService)
+    public function __construct(CampaignService $campaignService, QuotaService $quotaService, QuotaManager $quotaManager)
     {
         $this->campaignService = $campaignService;
         $this->quotaService = $quotaService;
+        $this->quotaManager = $quotaManager;
     }
 
     /**
@@ -48,6 +52,14 @@ class CampaignController extends Controller
 
         // Langsung ambil data tanpa cache
         $data = $this->campaignService->getScheduleOverview($appCode, $date);
+        
+        // Tambahkan informasi mode quota
+        $data['system_info'] = [
+            'quota_mode' => $this->quotaManager->isEqualQuotaEnabled() ? 'equal_quota' : 'group_quota',
+            'quota_mode_description' => $this->quotaManager->isEqualQuotaEnabled() 
+                ? 'Equal quota distribution among units'
+                : 'First request wins from group quota'
+        ];
 
         return response()->json([
             'success' => true,
@@ -59,14 +71,15 @@ class CampaignController extends Controller
      * GET /api/schedule/overview/range
      * Melihat jadwal kampanye dan kuota harian untuk range tanggal
      */
-    public function overviewRange(Request $request): JsonResponse
+    public function overviewRange(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'start_date' => 'required|date|after_or_equal:today',
-            'end_date' => 'required|date|after_or_equal:start_date|before_or_equal:' . now()->addMonth()->format('Y-m-d'),
-            'app_code' => 'required|string|exists:crm_units,app_code'
+            'start_date' => 'required|date',  // Hapus after_or_equal:today
+            'end_date' => 'required|date|after_or_equal:start_date',
+            'app_code' => 'required|string|exists:crm_units,app_code',
+            'view_type' => 'sometimes|string|in:calendar,range'  // Tambah parameter untuk calendar view
         ]);
-
+    
         if ($validator->fails()) {
             return response()->json([
                 'success' => false,
@@ -74,14 +87,14 @@ class CampaignController extends Controller
                 'errors' => $validator->errors()
             ], 422);
         }
-
+    
         try {
             $data = $this->campaignService->getScheduleOverviewRange(
                 $request->app_code,
                 $request->start_date,
                 $request->end_date
             );
-
+    
             return response()->json([
                 'success' => true,
                 'data' => $data
@@ -92,6 +105,19 @@ class CampaignController extends Controller
                 'message' => 'Failed to get schedule overview range',
                 'error' => $e->getMessage()
             ], 500);
+        }
+    
+        // Untuk calendar view, batasi maksimal 1 bulan
+        if ($request->view_type === 'calendar') {
+            $startDate = Carbon::parse($request->start_date);
+            $endDate = Carbon::parse($request->end_date);
+            
+            if ($startDate->diffInDays($endDate) > 31) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Calendar view cannot exceed 31 days'
+                ], 400);
+            }
         }
     }
     /**
@@ -324,6 +350,73 @@ class CampaignController extends Controller
         for ($i = 0; $i < 7; $i++) {
             $futureDate = now()->addDays($i)->format('Y-m-d');
             Cache::forget("schedule_overview_{$appCode}_{$futureDate}");
+        }
+    }
+        /**
+     * GET /api/schedule/calendar/{year}/{month}
+     * Calendar view for specific month
+     */
+    public function calendarView(Request $request, $year, $month): JsonResponse
+    {
+        $validator = Validator::make(array_merge($request->all(), compact('year', 'month')), [
+            'year' => 'required|integer|min:2020|max:2030',
+            'month' => 'required|integer|min:1|max:12',
+            'app_code' => 'required|string|exists:crm_units,app_code'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            // Calculate start and end dates for the month
+            $startDate = Carbon::createFromDate($year, $month, 1)->startOfMonth();
+            $endDate = $startDate->copy()->endOfMonth();
+            
+            // Get schedule overview for the entire month
+            $data = $this->campaignService->getScheduleOverviewRange(
+                $request->app_code,
+                $startDate->format('Y-m-d'),
+                $endDate->format('Y-m-d'),
+                true // Include historical data
+            );
+            
+            // Add calendar-specific metadata
+            $calendarData = [
+                'calendar_info' => [
+                    'year' => (int)$year,
+                    'month' => (int)$month,
+                    'month_name' => $startDate->format('F'),
+                    'total_days' => $endDate->day,
+                    'start_date' => $startDate->format('Y-m-d'),
+                    'end_date' => $endDate->format('Y-m-d')
+                ],
+                'monthly_summary' => [
+                    'total_campaigns' => collect($data['daily_breakdown'])->sum('campaign_summary.total_campaigns'),
+                    'sent_campaigns' => collect($data['daily_breakdown'])->sum('campaign_summary.sent_campaigns'),
+                    'pending_campaigns' => collect($data['daily_breakdown'])->sum('campaign_summary.pending_campaigns'),
+                    'approved_campaigns' => collect($data['daily_breakdown'])->sum('campaign_summary.approved_campaigns'),
+                    'total_emails_sent' => collect($data['daily_breakdown'])->sum('campaign_summary.total_emails_sent'),
+                    'quota_utilization' => $data['summary']['utilization_rate'] ?? 0
+                ],
+                'daily_breakdown' => $data['daily_breakdown'],
+                'summary' => $data['summary']
+            ];
+
+            return response()->json([
+                'success' => true,
+                'data' => $calendarData
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to get calendar view',
+                'error' => $e->getMessage()
+            ], 500);
         }
     }
 }
