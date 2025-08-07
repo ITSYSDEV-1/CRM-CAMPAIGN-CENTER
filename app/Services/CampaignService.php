@@ -603,7 +603,13 @@ class CampaignService
                     ];
                 });
 
-            $availableQuota = $pepipostAccount->getAvailableDailyQuota($date);
+            // PERBAIKAN: Gunakan QuotaManager untuk konsistensi dengan mode kuota
+            if ($this->quotaManager->isEqualQuotaEnabled()) {
+                $availableQuota = $this->quotaManager->getAvailableQuota($crmUnit, $date);
+            } else {
+                $availableQuota = $pepipostAccount->getAvailableDailyQuota($date);
+            }
+            
             $totalScheduled = $campaigns->sum('email_count');
             
             $dateRange[] = [
@@ -612,17 +618,22 @@ class CampaignService
                 'day_short' => $current->format('D'),
                 'is_historical' => $isHistorical,
                 'quota_info' => [
-                    'daily_quota' => $pepipostAccount->daily_quota,
+                    'daily_quota' => $this->quotaManager->isEqualQuotaEnabled() 
+                        ? $crmUnit->daily_quota 
+                        : $pepipostAccount->daily_quota,
                     'available_quota' => $availableQuota,
-                    'used_quota' => $pepipostAccount->daily_quota - $availableQuota,
+                    'used_quota' => $this->quotaManager->isEqualQuotaEnabled()
+                        ? ($crmUnit->daily_quota - $crmUnit->mandatory_daily_quota - $availableQuota)
+                        : ($pepipostAccount->daily_quota - $availableQuota),
                     'scheduled_count' => $totalScheduled,
-                    'utilization_rate' => $pepipostAccount->daily_quota > 0 
-                        ? round((($pepipostAccount->daily_quota - $availableQuota) / $pepipostAccount->daily_quota) * 100, 2) 
-                        : 0
+                    'utilization_rate' => $this->quotaManager->isEqualQuotaEnabled()
+                        ? ($crmUnit->daily_quota > 0 ? round((($crmUnit->daily_quota - $crmUnit->mandatory_daily_quota - $availableQuota) / ($crmUnit->daily_quota - $crmUnit->mandatory_daily_quota)) * 100, 2) : 0)
+                        : ($pepipostAccount->daily_quota > 0 ? round((($pepipostAccount->daily_quota - $availableQuota) / $pepipostAccount->daily_quota) * 100, 2) : 0)
                 ],
                 'campaigns' => $campaigns,
                 'campaign_summary' => [
                     'total_campaigns' => $campaigns->count(),
+                    'cancelled_campaigns' => $campaigns->where('status', 'cancelled')->count(),
                     'sent_campaigns' => $campaigns->where('status', 'sent')->count(),
                     'pending_campaigns' => $campaigns->where('status', 'pending')->count(),
                     'approved_campaigns' => $campaigns->where('status', 'approved')->count(),

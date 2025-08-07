@@ -397,6 +397,7 @@ class CampaignController extends Controller
                 ],
                 'monthly_summary' => [
                     'total_campaigns' => collect($data['daily_breakdown'])->sum('campaign_summary.total_campaigns'),
+                    'cancelled_campaigns' => collect($data['daily_breakdown'])->sum('campaign_summary.cancelled_campaigns'),
                     'sent_campaigns' => collect($data['daily_breakdown'])->sum('campaign_summary.sent_campaigns'),
                     'pending_campaigns' => collect($data['daily_breakdown'])->sum('campaign_summary.pending_campaigns'),
                     'approved_campaigns' => collect($data['daily_breakdown'])->sum('campaign_summary.approved_campaigns'),
